@@ -54,10 +54,6 @@ impl Parser {
     }
 
     fn parse_cond(&mut self) -> Option<Cond> {
-        // 1. take the column name into a variable `column`
-        // 2. check the = sign
-        // 3. take the value into a variable `value`
-        // 4. give back Some(the Cond)
         let column = self.word()?;
         self.expect(Token::Equals)?;
         let value = self.value()?;
