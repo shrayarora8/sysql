@@ -1,4 +1,4 @@
-use crate::{ast::*, parser};
+use crate::ast::*;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
@@ -74,12 +74,12 @@ impl Parser {
     fn parse_columns(&mut self) -> Option<Vec<String>> {
         if self.peek() == Some(Token::Star) {
             self.next();
-            return Some(vec![
+            Some(vec![
                 "time".to_string(),
                 "pid".to_string(),
                 "name".to_string(),
                 "user".to_string(),
-            ]);
+            ])
         } else {
             let mut columns = Vec::new();
             let mut column = self.word()?;
