@@ -1,4 +1,5 @@
 use crate::ast::*;
+use crate::parser::parse;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -64,12 +65,51 @@ fn parse_event(line: &str) -> Option<Row> {
     })
 }
 
+fn user_name(uid: &str) -> String {
+    let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+    for line in passwd.lines() {
+        let fields: Vec<&str> = line.split(':').collect();
+        if fields.len() > 2 && fields[2] == uid {
+            return fields[0].to_string();
+        }
+    }
+    uid.to_string()
+}
+
+fn parse_history_line(line: &str) -> Option<RecordRun> {
+    let parts: Vec<&str> = line.splitn(3, ' ').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let start = parts[0].parse().ok()?;
+    let end = parts[1].parse().ok()?;
+    match parse(parts[2])? {
+        Stmt::Record(rule) => Some(RecordRun { rule, start, end }),
+        _ => None,
+    }
+}
+
 pub fn read_log() -> Vec<Row> {
-    todo!()
+    let text = std::fs::read_to_string(LOG_FILE).unwrap_or_default();
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        if let Some(mut row) = parse_event(line) {
+            row.user = user_name(&row.user);
+            rows.push(row);
+        }
+    }
+    rows
 }
 
 pub fn read_history() -> Vec<RecordRun> {
-    todo!()
+    let text = std::fs::read_to_string(HISTORY_FILE).unwrap_or_default();
+    let mut runs = Vec::new();
+    for line in text.lines() {
+        if let Some(run) = parse_history_line(line) {
+            runs.push(run);
+        }
+    }
+    runs
 }
 
 #[cfg(test)]
@@ -91,5 +131,28 @@ mod tests {
         assert_eq!(parse_event(""), None);
         assert_eq!(parse_event("Attached 2 probes"), None);
         assert_eq!(parse_event("a b c d"), None);
+    }
+
+    // uid 0 is always root, and an unknown uid stays a number
+    #[test]
+    fn test_user_name() {
+        assert_eq!(user_name("0"), "root");
+        assert_eq!(user_name("4294967295"), "4294967295");
+    }
+
+    // a history line comes back as a Record through the parser
+    #[test]
+    fn test_parse_history_line() {
+        let run =
+            parse_history_line("100 130 RECORD processes WHERE name = 'curl' FOR 30").unwrap();
+        assert_eq!(run.start, 100);
+        assert_eq!(run.end, 130);
+        assert_eq!(run.rule.seconds, 30);
+        assert_eq!(run.rule.conds[0].value, "curl");
+        assert_eq!(
+            parse_history_line("100 130 SELECT pid FROM processes"),
+            None
+        );
+        assert_eq!(parse_history_line("garbage"), None);
     }
 }
