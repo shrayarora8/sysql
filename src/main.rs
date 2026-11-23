@@ -1,40 +1,43 @@
 mod analyzer;
 mod ast;
 mod compiler;
+mod display;
 mod interpreter;
 mod parser;
 mod recorder;
+mod repl;
 
 use ast::*;
 
-fn print_table(table: &Table) {
-    println!("{}", table.columns.join("\t"));
-    for row in &table.rows {
-        println!("{}", row.join("\t"));
-    }
-}
-
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() != 2 {
-        eprintln!("usage: sysql \"<statement>\"");
-        return;
-    }
-    let text = &args[1];
-
+// runs one statement, from the shell or from the command line
+pub fn execute(text: &str) {
+    let text = text.trim().trim_end_matches(';').trim();
     match parser::parse(text) {
-        None => eprintln!("could not parse: {}", text),
+        None => display::error(&parser::diagnose(text)),
         Some(Stmt::Record(rule)) => {
+            if !cfg!(target_os = "linux") {
+                display::error("RECORD needs Linux with bpftrace, run it inside the VM");
+                return;
+            }
             let script = compiler::compile(&rule);
             recorder::record(text, &script);
         }
         Some(Stmt::Select(query)) => {
             let history = recorder::read_history();
             if let Some(warning) = analyzer::analyze(&history, &query) {
-                println!("WARNING: {}", warning);
+                display::warn(&warning);
             }
             let rows = recorder::read_log();
-            print_table(&interpreter::run(&query, &rows));
+            display::print_table(&interpreter::run(&query, &rows));
         }
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    match args.len() {
+        1 => repl::start(),
+        2 => execute(&args[1]),
+        _ => eprintln!("usage: sysql            (interactive shell)\n       sysql \"<statement>\""),
     }
 }

@@ -1,7 +1,8 @@
 use crate::ast::*;
+use crate::display::{self, clock, dim, green};
 use crate::parser::parse;
 use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,6 +17,8 @@ fn now() -> u64 {
 }
 
 pub fn record(text: &str, script: &str) {
+    let live = std::io::stderr().is_terminal();
+    display::info(&format!("recording {}", text));
     let start = now();
     let mut child = Command::new("sudo")
         .arg("bpftrace")
@@ -30,15 +33,27 @@ pub fn record(text: &str, script: &str) {
         .append(true)
         .open(LOG_FILE)
         .expect("could not open events.log");
+    let mut count = 0;
     for line in BufReader::new(stdout).lines() {
         let line = line.expect("could not read from bpftrace");
-        if parse_event(&line).is_some() {
+        if let Some(row) = parse_event(&line) {
             writeln!(log, "{}", line).expect("could not write events.log");
+            count += 1;
+            if live {
+                eprintln!(
+                    "  {} {}  {:<16} pid {:<8} {}",
+                    green("+"),
+                    dim(&clock(row.time)),
+                    row.name,
+                    row.pid,
+                    user_name(&row.user)
+                );
+            }
         }
     }
     let status = child.wait().expect("bpftrace did not finish");
     if !status.success() {
-        eprintln!("bpftrace failed, nothing was recorded");
+        display::error("bpftrace failed, nothing was recorded");
         return;
     }
     let mut history = OpenOptions::new()
@@ -46,7 +61,14 @@ pub fn record(text: &str, script: &str) {
         .append(true)
         .open(HISTORY_FILE)
         .expect("could not open history.txt");
-    writeln!(history, "{} {} {}", start, now(), text).expect("could not write history.txt");
+    let end = now();
+    writeln!(history, "{} {} {}", start, end, text).expect("could not write history.txt");
+    display::ok(&format!(
+        "recorded {} event{} in {}s",
+        count,
+        if count == 1 { "" } else { "s" },
+        end - start
+    ));
 }
 
 fn parse_event(line: &str) -> Option<Row> {

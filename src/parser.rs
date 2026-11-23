@@ -151,6 +151,10 @@ fn tokenize(text: &str) -> Option<Vec<Token>> {
                 word.push(chars[i]);
                 i += 1;
             }
+            let upper = word.to_uppercase();
+            if KEYWORDS.contains(&upper.as_str()) {
+                word = upper;
+            }
             tokens.push(Token::Word(word));
         } else if c.is_ascii_digit() {
             let mut word = String::new();
@@ -160,10 +164,12 @@ fn tokenize(text: &str) -> Option<Vec<Token>> {
             }
             let num = word.parse::<u64>().ok()?;
             tokens.push(Token::Num(num))
-        } else if c == '\'' {
+        } else if c == '\'' || c == '"' {
+            // a string can use either quote, and ends at the same kind it started with
+            let quote = c;
             i += 1;
             let mut word = String::new();
-            while i < chars.len() && chars[i] != '\'' {
+            while i < chars.len() && chars[i] != quote {
                 word.push(chars[i]);
                 i += 1;
             }
@@ -181,6 +187,7 @@ fn tokenize(text: &str) -> Option<Vec<Token>> {
 }
 
 const COLUMNS: [&str; 4] = ["time", "pid", "name", "user"];
+const KEYWORDS: [&str; 6] = ["RECORD", "SELECT", "FROM", "WHERE", "AND", "FOR"];
 
 pub fn parse(text: &str) -> Option<Stmt> {
     let tokens = tokenize(text)?;
@@ -224,6 +231,63 @@ fn known_names(table: &str, conds: &[Cond], columns: &[String]) -> bool {
     true
 }
 
+// explains why parse() said no, in words a user can act on
+pub fn diagnose(text: &str) -> String {
+    let tokens = match tokenize(text) {
+        Some(tokens) => tokens,
+        None => {
+            return "could not read that: look for an unclosed quote or a character SysQL does not use, like ; > !".to_string();
+        }
+    };
+    let word = |i: usize| match tokens.get(i) {
+        Some(Token::Word(w)) => Some(w.as_str()),
+        _ => None,
+    };
+    if !matches!(word(0), Some("RECORD") | Some("SELECT")) {
+        return "a statement starts with RECORD or SELECT, try \\help".to_string();
+    }
+    for i in 0..tokens.len() {
+        if matches!(word(i), Some("RECORD") | Some("FROM"))
+            && let Some(table) = word(i + 1)
+            && table != "processes"
+            && !KEYWORDS.contains(&table)
+        {
+            return format!("unknown table '{}', the only table is processes", table);
+        }
+        if tokens.get(i + 1) == Some(&Token::Equals)
+            && let Some(column) = word(i)
+            && !COLUMNS.contains(&column)
+        {
+            return format!(
+                "unknown column '{}', the columns are time, pid, name, user",
+                column
+            );
+        }
+    }
+    if word(0) == Some("SELECT") {
+        let mut i = 1;
+        while let Some(column) = word(i) {
+            if column == "FROM" {
+                break;
+            }
+            if !COLUMNS.contains(&column) {
+                return format!(
+                    "unknown column '{}', the columns are time, pid, name, user",
+                    column
+                );
+            }
+            i += 1;
+            if tokens.get(i) == Some(&Token::Comma) {
+                i += 1;
+            }
+        }
+    }
+    if word(0) == Some("RECORD") && !tokens.contains(&Token::Word("FOR".to_string())) {
+        return "RECORD needs FOR <seconds> at the end, so it knows when to stop".to_string();
+    }
+    "that doesn't match the grammar, the two shapes are:\n  RECORD processes [WHERE column = value [AND ...]] FOR seconds\n  SELECT column, ... FROM processes [WHERE column = value [AND ...]]".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +309,8 @@ mod tests {
             ])
         );
         assert_eq!(tokenize("name = 'oops"), None);
+        assert_eq!(tokenize("\"curl\""), Some(vec![Str("curl".to_string())]));
+        assert_eq!(tokenize("'curl\""), None);
         assert_eq!(tokenize("pid = 4; ls"), None);
     }
 
@@ -361,10 +427,10 @@ mod edge_tests {
         assert_eq!(parser("RECORD processes WHERE FOR 60").parse_record(), None);
     }
 
-    // keywords must be in caps and in the right order, and spacing does not matter
+    // keywords work in any case but must be in the right order, and spacing does not matter
     #[test]
     fn test_order_and_spacing() {
-        assert_eq!(parser("record processes for 60").parse_record(), None);
+        assert!(parser("record processes for 60").parse_record().is_some());
         assert_eq!(parser("RECORD FOR 60").parse_record(), None);
         assert_eq!(parser("SELECT FROM processes").parse_select(), None);
         assert_eq!(
